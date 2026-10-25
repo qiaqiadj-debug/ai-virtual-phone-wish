@@ -487,6 +487,21 @@ function buildOpenAICompatibleRequest(
     options: ProviderRequestOptions,
 ): LlmRequestPayload {
     const sanitizeToolSchemaEnums = shouldStringifyToolSchemaEnums(config, baseUrl);
+    const sampling = buildSamplingBody(preset);
+
+    // Grok / xAI 部分模型不支持 presence_penalty 和 frequency_penalty，发送会报 400
+    const modelName = (config.defaultModel || "").toLowerCase();
+    const urlLower = (baseUrl || "").toLowerCase();
+    const isGrokModel =
+        modelName.includes("grok") ||
+        urlLower.includes("api.x.ai") ||
+        urlLower.includes("x.ai");
+
+    if (isGrokModel) {
+        delete sampling.presence_penalty;
+        delete sampling.frequency_penalty;
+    }
+
     const body: Record<string, unknown> = {
         model: config.defaultModel,
         messages: messages.map((message) => {
@@ -520,7 +535,7 @@ function buildOpenAICompatibleRequest(
             }
             return { role: message.role, content: openAIContent(message.content) };
         }),
-        ...buildSamplingBody(preset),
+        ...sampling,
     };
     if (
         options.maxTokens
