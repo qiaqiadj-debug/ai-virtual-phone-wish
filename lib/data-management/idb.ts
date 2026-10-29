@@ -514,6 +514,8 @@ async function ensureStores(dbName: string, specs: StoreSpec[]): Promise<IDBData
   return db;
 }
 
+const MASCOT_CHAT_DB_NAME = "AiPhoneMascotDB";
+
 export async function importSource(
   payload: SourceBackup,
   overwrite = false,
@@ -521,6 +523,10 @@ export async function importSource(
   onProgress?: (done: number, total: number) => void,
 ): Promise<{ added: number; skipped: number; overwritten: number; errors: string[] }> {
   const result = { added: 0, skipped: 0, overwritten: 0, errors: [] as string[] };
+  // 小卷聊天独立存放。旧备份仍可能带这份库，导入时跳过，避免超长会话随备份写回。
+  if (payload.type === "indexeddb" && payload.dbName === MASCOT_CHAT_DB_NAME) {
+    return result;
+  }
   const totalRecords = payload.type === "indexeddb"
     ? payload.stores.reduce((sum, store) => sum + store.records.length, 0)
     : payload.records.length;

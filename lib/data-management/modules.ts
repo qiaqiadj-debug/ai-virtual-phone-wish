@@ -35,11 +35,11 @@ const PRIMARY_DATA_MODULES: DataModuleDefinition[] = [
   {
     id: "chat",
     label: "聊天数据",
-    description: "会话、消息、联系人、聊天设置和待回复状态",
+    description: "角色会话、消息、联系人、聊天设置和待回复状态",
     variant: "action",
     critical: true,
     sources: [
-      { type: "indexeddb", dbName: "AiPhoneChatDB", label: "聊天记录" },
+      { type: "indexeddb", dbName: "AiPhoneChatDB", label: "角色聊天记录" },
       { type: "indexeddb", dbName: "AiPhoneMediaCacheDB", label: "聊天与工具媒体缓存" },
       { type: "indexeddb", dbName: "AiPhoneQaDB", label: "答疑助手会话" },
       {
@@ -142,7 +142,8 @@ const PRIMARY_DATA_MODULES: DataModuleDefinition[] = [
     variant: "success",
     critical: true,
     sources: [
-      { type: "indexeddb", dbName: "AiPhoneMascotDB", label: "桌宠聊天" },
+      // 小卷聊天在 AiPhoneMascotDB，刻意不备份。超长会话导入后会打崩聊天页；
+      // 旧备份里的这份库由 idb.ts 导入时跳过。角色聊天在 AiPhoneChatDB，不受影响。
       { type: "indexeddb", dbName: "ai_phone_theme_db_v1", label: "主题素材库" },
       {
         type: "kv",
