@@ -39,6 +39,10 @@ type SubtitleEntry = {
     text: string;
 };
 
+const CALL_SILENCE_FOLLOW_UP_MS = 60_000;
+const CALL_SILENCE_FOLLOW_UP_MAX = 3;
+const CALL_SILENCE_FOLLOW_UP_CUE = "[通话中对方已经沉默约一分钟，没有说话。请用口语自然地追一句，接着刚才的话题，不要重复上一句，也不要提及这条提示。]";
+
 type VoiceCallScreenProps = {
     session: ChatSession;
     character: Character;
@@ -95,6 +99,10 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const minimizedRef = useRef(false);
     const stateRef = useRef<string>("CONNECTING");
     const interimTextRef = useRef<string>("");  // ref 版本，闭包安全
+    const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const silenceFollowUpsRef = useRef(0);
+    const silenceEligibleRef = useRef(false);
+    const isMutedRef = useRef(false);
     const sttWarningShownRef = useRef(false);
     const subtitleScrollRef = useRef<HTMLDivElement>(null);
     const messagesRef = useRef<ChatMessage[]>([]);
@@ -104,15 +112,24 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     // Keep refs in sync
     useEffect(() => { stateRef.current = callState; }, [callState]);
     useEffect(() => { minimizedRef.current = minimized; }, [minimized]);
+    useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
+
+    const clearSilenceFollowUp = useCallback(() => {
+        if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current);
+            silenceTimerRef.current = null;
+        }
+    }, []);
 
     // 缩小为悬浮窗：冻结通话——停止监听、打断在播放的语音
     useEffect(() => {
         if (!minimized) return;
+        clearSilenceFollowUp();
         if (sttRef.current) { sttRef.current.abort(); sttRef.current = null; }
         setInterimText("");
         if (audioAbortRef.current) { audioAbortRef.current(); audioAbortRef.current = null; }
         if (window.speechSynthesis) window.speechSynthesis.cancel();
-    }, [minimized]);
+    }, [minimized, clearSilenceFollowUp]);
 
     // 来电等待接听：循环振动（开关在聊天主页，iOS 网页不支持自动无效果）
     useEffect(() => {
@@ -135,6 +152,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
         setCallAudioSessionActive(true);
         return () => {
             stateRef.current = "ENDED";
+            clearSilenceFollowUp();
             if (sttRef.current) { sttRef.current.abort(); sttRef.current = null; }
             if (audioAbortRef.current) { audioAbortRef.current(); audioAbortRef.current = null; }
             setCallAudioSessionActive(false);
@@ -343,8 +361,10 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
     // ── Full conversation turn ──────────────────────
 
-    const runConversationTurn = useCallback(async (userText?: string) => {
-        // 1. Save user message (skip for initial greeting)
+    const runConversationTurn = useCallback(async (userText?: string, options?: { followUp?: boolean }) => {
+        clearSilenceFollowUp();
+        if (!options?.followUp) silenceFollowUpsRef.current = 0;
+        // 1. Save user message (skip for initial greeting and silence follow-up)
         if (userText) {
             const userMsg = pushChatMessage({
                 sessionId: session.id,
@@ -358,12 +378,24 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
         }
 
         // 2. Switch to PROCESSING
+        stateRef.current = "PROCESSING";
         setCallState("PROCESSING");
         setInterimText("");
 
+        const promptHistory = options?.followUp
+            ? [...messagesRef.current, {
+                id: `call-silence-${Date.now()}`,
+                sessionId: session.id,
+                role: "user" as const,
+                content: CALL_SILENCE_FOLLOW_UP_CUE,
+                status: "sent" as const,
+                createdAt: new Date().toISOString(),
+            }]
+            : messagesRef.current;
+
         try {
             // 3. Generate AI response
-            const aiResponseText = flattenCompletionResult(await generateChatCompletion(session, messagesRef.current, {
+            const aiResponseText = flattenCompletionResult(await generateChatCompletion(session, promptHistory, {
                 appTags: ["chat", "voice"],
             }));
 
@@ -376,9 +408,10 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             const speechText = stripBilingualForSpeech(displayText);
 
             if (!displayText) {
-                setCallState("IDLE");
+                if (stateRef.current !== "ENDED") setCallState("IDLE");
                 return;
             }
+            silenceEligibleRef.current = true;
 
             // 5. Add AI subtitle
             const subtitleId = `ai-${Date.now()}`;
@@ -424,7 +457,30 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 setCallState("IDLE");
             }
         }
-    }, [session, processAIResponse, playCallAudio]);
+    }, [session, processAIResponse, playCallAudio, clearSilenceFollowUp]);
+
+    const armSilenceFollowUp = useCallback(() => {
+        clearSilenceFollowUp();
+        if (!silenceEligibleRef.current) return;
+        if (silenceFollowUpsRef.current >= CALL_SILENCE_FOLLOW_UP_MAX) return;
+        silenceTimerRef.current = setTimeout(() => {
+            silenceTimerRef.current = null;
+            if (stateRef.current !== "IDLE" || minimizedRef.current || isMutedRef.current) return;
+            if (silenceFollowUpsRef.current >= CALL_SILENCE_FOLLOW_UP_MAX) return;
+            silenceFollowUpsRef.current += 1;
+            stateRef.current = "PROCESSING";
+            void runConversationTurn(undefined, { followUp: true });
+        }, CALL_SILENCE_FOLLOW_UP_MS);
+    }, [clearSilenceFollowUp, runConversationTurn]);
+
+    // 角色说完回到通话中后静默 1 分钟再追发，连续最多 3 次；开口、静音、缩小或挂断则取消
+    useEffect(() => {
+        if (callState === "IDLE" && !isMuted && !minimized) {
+            armSilenceFollowUp();
+            return () => clearSilenceFollowUp();
+        }
+        clearSilenceFollowUp();
+    }, [callState, isMuted, minimized, armSilenceFollowUp, clearSilenceFollowUp]);
 
     // ── Auto-listen: 进入 IDLE 自动开始监听 ────────
 
@@ -447,6 +503,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 interimTextRef.current = text;
                 // 有中间结果 → 切到 USER_SPEAKING
                 if (stateRef.current === "IDLE") {
+                    clearSilenceFollowUp();
+                    stateRef.current = "USER_SPEAKING";
                     setCallState("USER_SPEAKING");
                 }
             },
@@ -505,7 +563,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             sttRef.current = null;
             showSttCompatibilityWarning();
         }
-    }, [androidTextInputOnly, holdToTalk, runConversationTurn, session.contactId, showSttCompatibilityWarning]);
+    }, [androidTextInputOnly, holdToTalk, runConversationTurn, session.contactId, showSttCompatibilityWarning, clearSilenceFollowUp]);
 
     // IDLE 时自动开启监听（按住说话模式无自动监听，识别只在按住期间发生）
     useEffect(() => {
@@ -581,8 +639,12 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
         characterId: session.contactId,
         canStart: () => stateRef.current === "IDLE",
         onRecordingStart: () => {
+            clearSilenceFollowUp();
             setInterimText("");
-            if (stateRef.current === "IDLE") setCallState("USER_SPEAKING");
+            if (stateRef.current === "IDLE") {
+                stateRef.current = "USER_SPEAKING";
+                setCallState("USER_SPEAKING");
+            }
         },
         onTranscribeStart: () => {
             if (stateRef.current === "USER_SPEAKING") setCallState("PROCESSING");
@@ -598,6 +660,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     // ── Hangup ──────────────────────────────────────
 
     const handleHangup = useCallback(() => {
+        stateRef.current = "ENDED";
+        clearSilenceFollowUp();
         setCallState("ENDED");
 
         // Stop any ongoing STT
