@@ -5,6 +5,7 @@ import {
     buildRequestHeaders,
     determineBaseUrl,
     isNativeAnthropicApi,
+    applyOpenAIOutputLimit,
     isNativeGoogleApi,
     stripHallucinatedTimestamps,
 } from "./api-helpers";
@@ -545,6 +546,7 @@ function buildOpenAICompatibleRequest(
         body.max_tokens = Math.floor(options.maxTokens);
     }
     if (options.stream) body.stream = true;
+    applyOpenAIOutputLimit(body, config.defaultModel || "");
     if (options.tools?.length) {
         body.tools = options.tools.map((tool) => ({
             type: "function",

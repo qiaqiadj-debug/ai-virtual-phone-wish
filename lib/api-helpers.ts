@@ -90,6 +90,25 @@ export function isNativeGoogleApi(config: ApiConfig): boolean {
     return config.provider === "Google";
 }
 
+/** gpt-5 / o 系列只接受 max_completion_tokens，再带 max_tokens 会直接 400。 */
+export function prefersMaxCompletionTokens(model: string): boolean {
+    const leaf = model.trim().toLowerCase().split("/").pop() || "";
+    return leaf.startsWith("gpt-5") || /^o\d/.test(leaf);
+}
+
+export function applyOpenAIOutputLimit(body: Record<string, unknown>, model: string): void {
+    if (!prefersMaxCompletionTokens(model)) return;
+    if (typeof body.max_tokens === "number") {
+        body.max_completion_tokens = body.max_tokens;
+        delete body.max_tokens;
+    }
+    // 这些采样字段在推理模型上同样会被拒，去掉后走服务端默认值。
+    delete body.temperature;
+    delete body.top_p;
+    delete body.frequency_penalty;
+    delete body.presence_penalty;
+}
+
 export type SimpleLLMMessage = { role: string; content: string };
 export type SimpleLLMCallOptions = { temperature?: number; max_tokens?: number; signal?: AbortSignal; label?: string };
 export type SimpleLLMCallResult = { content: string | null; error?: string; finishReason?: string; wasTruncated?: boolean };
@@ -162,16 +181,18 @@ export function buildSimpleLLMRequest(
         };
     }
     // OpenAI-compatible (all others including proxies/relays/custom)
+    const body: Record<string, unknown> = {
+        model: config.defaultModel,
+        messages,
+        temperature,
+        ...(max_tokens ? { max_tokens } : {}),
+        ...(stream ? { stream: true } : {}),
+    };
+    applyOpenAIOutputLimit(body, config.defaultModel);
     return {
         url: buildChatCompletionsUrl(baseUrl),
         headers,
-        body: JSON.stringify({
-            model: config.defaultModel,
-            messages,
-            temperature,
-            ...(max_tokens ? { max_tokens } : {}),
-            ...(stream ? { stream: true } : {}),
-        }),
+        body: JSON.stringify(body),
         providerKind: "openai-compatible",
     };
 }
