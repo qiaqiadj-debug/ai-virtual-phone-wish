@@ -19,7 +19,7 @@ import type {
 } from "./types";
 
 const BACKUP_FILE_VERSION = 2;                       // new backups: media stored as binary entries
-const SUPPORTED_BACKUP_VERSIONS = new Set<number>([1, 2]); // still restore old base64 (v1) backups
+const SUPPORTED_BACKUP_VERSIONS = new Set<number>([1, 2, 3]); // still restore old base64 (v1) backups; accept Y2K v3
 
 function isFiniteNonNegative(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
