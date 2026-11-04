@@ -137,7 +137,7 @@ export type DataSnapshot = {
 export type BackupManifest = {
   format: "ai-phone-backup";
   /** 1 = media inlined as base64; 2 = media stored as separate binary entries (media/<ref>.bin). */
-  version: 1 | 2;
+   version: 1 | 2 | 3;
   createdAt: string;
   origin: string;
   modules: Array<{
